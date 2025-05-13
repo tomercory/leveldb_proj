@@ -1124,6 +1124,8 @@ int main(int argc, char** argv) {
   }
 
   leveldb::g_env = leveldb::Env::Default();
+  //leveldb::g_env = leveldb::NewMemEnv(leveldb::Env::Default()); // use this to store the whole DB in-memory
+
 
   // Choose a location for the test database if none given with --db=<path>
   if (FLAGS_db == nullptr) {
