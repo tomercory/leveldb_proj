@@ -40,6 +40,7 @@ template <typename Key, class Comparator>
 class SkipList {
  private:
   struct Node;
+  struct PtrKeyPair;
 
  public:
   // Create a new SkipList object that will use "cmp" for comparing keys,
@@ -141,6 +142,12 @@ class SkipList {
 
 // Implementation details follow
 template <typename Key, class Comparator>
+struct SkipList<Key, Comparator>::PtrKeyPair {
+  std::atomic<Node*> nextPtr;
+  std::atomic<Key> nextKey;
+};
+
+template <typename Key, class Comparator>
 struct SkipList<Key, Comparator>::Node {
   explicit Node(const Key& k) : key(k) {}
 
@@ -152,35 +159,56 @@ struct SkipList<Key, Comparator>::Node {
     assert(n >= 0);
     // Use an 'acquire load' so that we observe a fully initialized
     // version of the returned Node.
-    return next_[n].load(std::memory_order_acquire);
+    return next_[n].nextPtr.load(std::memory_order_acquire);
   }
   void SetNext(int n, Node* x) {
     assert(n >= 0);
     // Use a 'release store' so that anybody who reads through this
     // pointer observes a fully initialized version of the inserted node.
-    next_[n].store(x, std::memory_order_release);
+    next_[n].nextPtr.store(x, std::memory_order_release);
   }
+  Key NextKey(int n) {
+    assert(n >= 0);
+    // Use an 'acquire load' so that we observe a fully initialized
+    // version of the returned Node.
+    return next_[n].nextKey.load(std::memory_order_acquire);
+  }
+  void SetNextKey(int n, Key x) {
+    assert(n >= 0);
+    // Use a 'release store' so that anybody who reads through this
+    // pointer observes a fully initialized version of the inserted node.
+    next_[n].nextKey.store(x, std::memory_order_release);
+  }
+
 
   // No-barrier variants that can be safely used in a few locations.
   Node* NoBarrier_Next(int n) {
     assert(n >= 0);
-    return next_[n].load(std::memory_order_relaxed);
+    return next_[n].nextPtr.load(std::memory_order_relaxed);
   }
   void NoBarrier_SetNext(int n, Node* x) {
     assert(n >= 0);
-    next_[n].store(x, std::memory_order_relaxed);
+    next_[n].nextPtr.store(x, std::memory_order_relaxed);
+  }
+  Key NoBarrier_NextKey(int n) {
+    assert(n >= 0);
+    return next_[n].nextKey.load(std::memory_order_relaxed);
+  }
+  void NoBarrier_SetNext(int n, Key x) {
+    assert(n >= 0);
+    next_[n].nextKey.store(x, std::memory_order_relaxed);
   }
 
  private:
   // Array of length equal to the node height.  next_[0] is lowest level link.
-  std::atomic<Node*> next_[1];
+  PtrKeyPair next_[1];
 };
 
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::NewNode(
     const Key& key, int height) {
   char* const node_memory = arena_->AllocateAligned(
-      sizeof(Node) + sizeof(std::atomic<Node*>) * (height - 1));
+      sizeof(Node) + sizeof(PtrKeyPair) * (height - 1));
   return new (node_memory) Node(key);
 }
 
