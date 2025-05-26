@@ -295,8 +295,8 @@ SkipList<Key, Comparator>::ForesightKeyIsAfterNode(const Key& key, Node* n, int 
   if (n->NoBarrier_Next(level) == nullptr || compare_(n->NextKey(level), key) >= 0){
     return nullptr;
   } 
-  return n->Next(level); // maybe does not need barrier? Foresight TODO
-} 
+  return n->Next(level); // This barrier is necessary
+}
 
 // template <typename Key, class Comparator>
 // typename SkipList<Key, Comparator>::Node*
@@ -460,13 +460,13 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
     x->NoBarrier_SetNext(i, next);
     x->NoBarrier_SetNextKey(i, nextKey);
     if (next == nullptr){ // prev->next[i] was nullptr, must handle accordingly to keep correctness.
-      prev[i]->SetNextKey(i, key); 
-      prev[i]->SetNext(i, x); // TODO: maybe does not need barrier?
+      prev[i]->NoBarrier_SetNextKey(i, key); // Barrier is unnecessary here
+      prev[i]->SetNext(i, x); // This barrier is necessary
     }
     else {
-      prev[i]->SetNext(i, x);
-      prev[i]->SetNextKey(i, key); // TODO: maybe does not need barrier?
-    }
+      prev[i]->SetNext(i, x); // this barrier is necessary
+      prev[i]->SetNextKey(i, key); // TSan doesn't catch this, but I think this barrier is necessary for Foresight
+    }                                        // Although, tests should be checking for it, so not sure
   }
 }
 
