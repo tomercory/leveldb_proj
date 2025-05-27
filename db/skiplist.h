@@ -466,7 +466,7 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
     else {
       prev[i]->SetNext(i, x); // this barrier is necessary
       prev[i]->SetNextKey(i, key); // TSan doesn't catch this, but I think this barrier is necessary for Foresight
-    }                                        // Although, tests should be checking for it, so not sure
+    }                                        // Although, tests should be checking for it, so not sure 
   }
 }
 
