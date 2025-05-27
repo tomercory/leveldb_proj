@@ -40,7 +40,6 @@ template <typename Key, class Comparator>
 class SkipList {
  private:
   struct Node;
-  struct PtrKeyPair;
 
  public:
   // Create a new SkipList object that will use "cmp" for comparing keys,
@@ -111,9 +110,6 @@ class SkipList {
   // Return true if key is greater than the data stored in "n"
   bool KeyIsAfterNode(const Key& key, Node* n) const;
 
-  // Return the pointer to the next node at the level if key is greater than the next node's key, nullptr otherwise
-  Node* ForesightKeyIsAfterNode(const Key& key, Node* n, int level) const;
-
   // Return the earliest node that comes at or after key.
   // Return nullptr if there is no such node.
   //
@@ -145,12 +141,6 @@ class SkipList {
 
 // Implementation details follow
 template <typename Key, class Comparator>
-struct SkipList<Key, Comparator>::PtrKeyPair {
-  std::atomic<Node*> nextPtr;
-  std::atomic<Key> nextKey;
-};
-
-template <typename Key, class Comparator>
 struct SkipList<Key, Comparator>::Node {
   explicit Node(const Key& k) : key(k) {}
 
@@ -162,56 +152,35 @@ struct SkipList<Key, Comparator>::Node {
     assert(n >= 0);
     // Use an 'acquire load' so that we observe a fully initialized
     // version of the returned Node.
-    return next_[n].nextPtr.load(std::memory_order_acquire);
+    return next_[n].load(std::memory_order_acquire);
   }
   void SetNext(int n, Node* x) {
     assert(n >= 0);
     // Use a 'release store' so that anybody who reads through this
     // pointer observes a fully initialized version of the inserted node.
-    next_[n].nextPtr.store(x, std::memory_order_release);
+    next_[n].store(x, std::memory_order_release);
   }
-  Key NextKey(int n) {
-    assert(n >= 0);
-    // Use an 'acquire load' so that we observe a fully initialized
-    // version of the returned Node.
-    return next_[n].nextKey.load(std::memory_order_acquire);
-  }
-  void SetNextKey(int n, Key x) {
-    assert(n >= 0);
-    // Use a 'release store' so that anybody who reads through this
-    // pointer observes a fully initialized version of the inserted node.
-    next_[n].nextKey.store(x, std::memory_order_release);
-  }
-
 
   // No-barrier variants that can be safely used in a few locations.
   Node* NoBarrier_Next(int n) {
     assert(n >= 0);
-    return next_[n].nextPtr.load(std::memory_order_relaxed);
+    return next_[n].load(std::memory_order_relaxed);
   }
   void NoBarrier_SetNext(int n, Node* x) {
     assert(n >= 0);
-    next_[n].nextPtr.store(x, std::memory_order_relaxed);
-  }
-  Key NoBarrier_NextKey(int n) {
-    assert(n >= 0);
-    return next_[n].nextKey.load(std::memory_order_relaxed);
-  }
-  void NoBarrier_SetNextKey(int n, Key x) {
-    assert(n >= 0);
-    next_[n].nextKey.store(x, std::memory_order_relaxed);
+    next_[n].store(x, std::memory_order_relaxed);
   }
 
  private:
   // Array of length equal to the node height.  next_[0] is lowest level link.
-  PtrKeyPair next_[1];
+  std::atomic<Node*> next_[1];
 };
 
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::NewNode(
     const Key& key, int height) {
   char* const node_memory = arena_->AllocateAligned(
-      sizeof(Node) + sizeof(PtrKeyPair) * (height - 1));
+      sizeof(Node) + sizeof(std::atomic<Node*>) * (height - 1));
   return new (node_memory) Node(key);
 }
 
@@ -284,110 +253,46 @@ template <typename Key, class Comparator>
 bool SkipList<Key, Comparator>::KeyIsAfterNode(const Key& key, Node* n) const {
   // null n is considered infinite
   return (n != nullptr) && (compare_(n->key, key) < 0);
-} 
-
-template <typename Key, class Comparator>
-typename SkipList<Key, Comparator>::Node* 
-SkipList<Key, Comparator>::ForesightKeyIsAfterNode(const Key& key, Node* n, int level) const {
-  // null n is considered infinite
-  // Foresight - must read pointer before key to remain correct even during a concurrent insert that changes next from nullptr to something else
-  // (There are no deletes and at most one insert is possible at a time- enforced by an external lock)
-  if (n->NoBarrier_Next(level) == nullptr || compare_(n->NextKey(level), key) >= 0){
-    return nullptr;
-  } 
-  return n->Next(level); // This barrier is necessary
 }
-
-// template <typename Key, class Comparator>
-// typename SkipList<Key, Comparator>::Node*
-// SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key,
-//                                               Node** prev) const { // old version
-//   Node* x = head_;
-//   int level = GetMaxHeight() - 1;
-//   while (true) {
-//     Node* next = x->Next(level);
-//     if (KeyIsAfterNode(key, next)) { 
-//       // Keep searching in this list
-//       x = next;
-//     } else {
-//       if (prev != nullptr) prev[level] = x;
-//       if (level == 0) {
-//         return next;
-//       } else {
-//         // Switch to next list
-//         level--;
-//       }
-//     }
-//   }
-// }
 
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
 SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key,
-                                              Node** prev) const { 
+                                              Node** prev) const {
   Node* x = head_;
   int level = GetMaxHeight() - 1;
-  while (level>0) { // Traverse index level with Foresight
-    Node* next = ForesightKeyIsAfterNode(key, x, level);
-    if (next) { 
+  while (true) {
+    Node* next = x->Next(level);
+    if (KeyIsAfterNode(key, next)) {
       // Keep searching in this list
       x = next;
     } else {
       if (prev != nullptr) prev[level] = x;
-      level --;
-    }
-  }
-  while (true) { // Traverse data level traditionally
-    Node* next = x->Next(0);
-    if (KeyIsAfterNode(key, next)) { 
-      // Keep searching in this list
-      x = next;
-    } else {
-      if (prev != nullptr) prev[0] = x;
-      return next;
+      if (level == 0) {
+        return next;
+      } else {
+        // Switch to next list
+        level--;
+      }
     }
   }
 }
 
-// template <typename Key, class Comparator>
-// typename SkipList<Key, Comparator>::Node*
-// SkipList<Key, Comparator>::FindLessThan(const Key& key) const { // old version
-//   Node* x = head_;
-//   int level = GetMaxHeight() - 1;
-//   while (true) {
-//     assert(x == head_ || compare_(x->key, key) < 0); 
-//     Node* next = x->Next(level);
-//     if (next == nullptr || compare_(next->key, key) >= 0) {
-//       if (level == 0) {
-//         return x;
-//       } else {
-//         // Switch to next list
-//         level--;
-//       }
-//     } else {
-//       x = next;
-//     }
-//   }
-// }
-
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
-SkipList<Key, Comparator>::FindLessThan(const Key& key) const { 
+SkipList<Key, Comparator>::FindLessThan(const Key& key) const {
   Node* x = head_;
   int level = GetMaxHeight() - 1;
-  while (level>0) { // traverse index level
+  while (true) {
     assert(x == head_ || compare_(x->key, key) < 0);
-    if (x->NoBarrier_Next(level) == nullptr || compare_(x->NextKey(level), key) >= 0) {
-      level--;
-    } else {
-      x = x->Next(level);
-    }
-  }
-  while (true) { // traverse data level
-    assert(x == head_ || compare_(x->key, key) < 0); 
     Node* next = x->Next(level);
     if (next == nullptr || compare_(next->key, key) >= 0) {
-      return x;
+      if (level == 0) {
+        return x;
+      } else {
+        // Switch to next list
+        level--;
+      }
     } else {
       x = next;
     }
@@ -427,7 +332,7 @@ SkipList<Key, Comparator>::SkipList(Comparator cmp, Arena* arena)
 }
 
 template <typename Key, class Comparator>
-void SkipList<Key, Comparator>::Insert(const Key& key) {  
+void SkipList<Key, Comparator>::Insert(const Key& key) {
   // TODO(opt): We can use a barrier-free variant of FindGreaterOrEqual()
   // here since Insert() is externally synchronized.
   Node* prev[kMaxHeight];
@@ -453,20 +358,10 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
 
   x = NewNode(key, height);
   for (int i = 0; i < height; i++) {
-    Node* next = prev[i]->NoBarrier_Next(i);
-    Key nextKey = prev[i]->NoBarrier_NextKey(i); // no concurrent inserts ensures correct value.
     // NoBarrier_SetNext() suffices since we will add a barrier when
     // we publish a pointer to "x" in prev[i].
-    x->NoBarrier_SetNext(i, next);
-    x->NoBarrier_SetNextKey(i, nextKey);
-    if (next == nullptr){ // prev->next[i] was nullptr, must handle accordingly to keep correctness.
-      prev[i]->NoBarrier_SetNextKey(i, key); // Barrier is unnecessary here
-      prev[i]->SetNext(i, x); // This barrier is necessary
-    }
-    else {
-      prev[i]->SetNext(i, x); // this barrier is necessary
-      prev[i]->SetNextKey(i, key); // TSan doesn't catch this, but I think this barrier is necessary for Foresight
-    }                                        // Although, tests should be checking for it, so not sure
+    x->NoBarrier_SetNext(i, prev[i]->NoBarrier_Next(i));
+    prev[i]->SetNext(i, x);
   }
 }
 
